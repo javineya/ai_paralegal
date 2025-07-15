@@ -1,0 +1,76 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Flutter: Run on Windows",
+			"type": "shell",
+			"command": "C:\\flutter\\bin\\flutter.bat",
+			"args": [
+				"run",
+				"-d",
+				"windows"
+			],
+			"group": "build",
+			"problemMatcher": [],
+			"isBackground": true
+		},
+		{
+			"label": "Flutter: Run on iOS",
+			"type": "shell",
+			"command": "C:\\flutter\\bin\\flutter.bat",
+			"args": [
+				"run",
+				"-d",
+				"ios"
+			],
+			"group": "build",
+			"problemMatcher": [],
+			"isBackground": true
+		},
+		{
+			"label": "Flutter: Build Windows Release",
+			"type": "shell",
+			"command": "C:\\flutter\\bin\\flutter.bat",
+			"args": [
+				"build",
+				"windows",
+				"--release"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Flutter: Build iOS Release",
+			"type": "shell",
+			"command": "C:\\flutter\\bin\\flutter.bat",
+			"args": [
+				"build",
+				"ios",
+				"--release"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Flutter: Clean",
+			"type": "shell",
+			"command": "C:\\flutter\\bin\\flutter.bat",
+			"args": [
+				"clean"
+			],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Flutter: Get Dependencies",
+			"type": "shell",
+			"command": "C:\\flutter\\bin\\flutter.bat",
+			"args": [
+				"pub",
+				"get"
+			],
+			"group": "build",
+			"problemMatcher": []
+		}
+	]
+}

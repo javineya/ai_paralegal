@@ -1,0 +1,2438 @@
+import 'message.dart';
+
+class Conversation {
+  final String id;
+  final String title;
+  final DateTime createdAt;
+  final DateTime lastUpdated;
+  final List<Message> messages;
+  final String? category;
+  final List<String> tags;
+
+  Conversation({
+    required this.id,
+    required this.title,
+    required this.createdAt,
+    required this.lastUpdated,
+    required this.messages,
+    this.category,
+    this.tags = const [],
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'createdAt': createdAt.toIso8601String(),
+      'lastUpdated': lastUpdated.toIso8601String(),
+      'messages': messages.map((m) => m.toJson()).toList(),
+      'category': category,
+      'tags': tags,
+    };
+  }
+
+  factory Conversation.fromJson(Map<String, dynamic> json) {
+    return Conversation(
+      id: json['id'],
+      title: json['title'],
+      createdAt: DateTime.parse(json['createdAt']),
+      lastUpdated: DateTime.parse(json['lastUpdated']),
+      messages: (json['messages'] as List)
+          .map((m) => Message.fromJson(m))
+          .toList(),
+      category: json['category'],
+      tags: List<String>.from(json['tags'] ?? []),
+    );
+  }
+
+  Conversation copyWith({
+    String? id,
+    String? title,
+    DateTime? createdAt,
+    DateTime? lastUpdated,
+    List<Message>? messages,
+    String? category,
+    List<String>? tags,
+  }) {
+    return Conversation(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      createdAt: createdAt ?? this.createdAt,
+      lastUpdated: lastUpdated ?? this.lastUpdated,
+      messages: messages ?? this.messages,
+      category: category ?? this.category,
+      tags: tags ?? this.tags,
+    );
+  }
+}
+class Message {
+  final String id;
+  final String content;
+  final bool isUser;
+  final DateTime timestamp;
+  final List<LegalCitation>? citations;
+
+  Message({
+    required this.id,
+    required this.content,
+    required this.isUser,
+    required this.timestamp,
+    this.citations,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'content': content,
+      'isUser': isUser,
+      'timestamp': timestamp.toIso8601String(),
+      'citations': citations?.map((c) => c.toJson()).toList(),
+    };
+  }
+
+  factory Message.fromJson(Map<String, dynamic> json) {
+    return Message(
+      id: json['id'],
+      content: json['content'],
+      isUser: json['isUser'],
+      timestamp: DateTime.parse(json['timestamp']),
+      citations: json['citations'] != null
+          ? (json['citations'] as List)
+              .map((c) => LegalCitation.fromJson(c))
+              .toList()
+          : null,
+    );
+  }
+}
+
+class LegalCitation {
+  final String caseTitle;
+  final String citation;
+  final String court;
+  final String year;
+  final String? summary;
+  final CitationType type;
+
+  LegalCitation({
+    required this.caseTitle,
+    required this.citation,
+    required this.court,
+    required this.year,
+    this.summary,
+    required this.type,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'caseTitle': caseTitle,
+      'citation': citation,
+      'court': court,
+      'year': year,
+      'summary': summary,
+      'type': type.toString(),
+    };
+  }
+
+  factory LegalCitation.fromJson(Map<String, dynamic> json) {
+    return LegalCitation(
+      caseTitle: json['caseTitle'],
+      citation: json['citation'],
+      court: json['court'],
+      year: json['year'],
+      summary: json['summary'],
+      type: CitationType.values.firstWhere(
+        (e) => e.toString() == json['type'],
+        orElse: () => CitationType.caselaw,
+      ),
+    );
+  }
+
+  String get formattedCitation {
+    switch (type) {
+      case CitationType.caselaw:
+        return '$caseTitle, $citation ($court $year)';
+      case CitationType.statute:
+        return '$citation ($year)';
+      case CitationType.regulation:
+        return '$citation ($year)';
+      case CitationType.secondary:
+        return '$caseTitle, $citation ($year)';
+    }
+  }
+}
+
+enum CitationType {
+  caselaw,
+  statute,
+  regulation,
+  secondary,
+}
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../models/conversation.dart';
+import '../models/message.dart';
+import '../services/ai_service.dart';
+import '../services/conversation_service.dart';
+import '../widgets/message_bubble.dart';
+import '../widgets/sidebar.dart';
+import '../widgets/search_bar.dart' as custom;
+import '../utils/app_state.dart';
+
+class ChatScreen extends StatefulWidget {
+  const ChatScreen({super.key});
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends State<ChatScreen> {
+  final TextEditingController _messageController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  final AIService _aiService = AIService();
+  final ConversationService _conversationService = ConversationService();
+  
+  bool _isLoading = false;
+  bool _isSidebarVisible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadConversations();
+  }
+
+  Future<void> _loadConversations() async {
+    final appState = Provider.of<AppState>(context, listen: false);
+    final conversations = await _conversationService.getConversations();
+    appState.setConversations(conversations);
+    
+    if (conversations.isNotEmpty && appState.currentConversation == null) {
+      appState.setCurrentConversation(conversations.first);
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    if (_messageController.text.trim().isEmpty || _isLoading) return;
+
+    final userMessageText = _messageController.text.trim();
+    final appState = Provider.of<AppState>(context, listen: false);
+    
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      // Create user message
+      final userMessage = Message(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        content: userMessageText,
+        isUser: true,
+        timestamp: DateTime.now(),
+      );
+
+      // Create or update conversation
+      Conversation conversation;
+      if (appState.currentConversation == null) {
+        // Create new conversation
+        conversation = Conversation(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          title: _conversationService.generateConversationTitle(userMessageText),
+          createdAt: DateTime.now(),
+          lastUpdated: DateTime.now(),
+          messages: [userMessage],
+        );
+      } else {
+        // Add to existing conversation
+        final updatedMessages = [...appState.currentConversation!.messages, userMessage];
+        conversation = appState.currentConversation!.copyWith(
+          messages: updatedMessages,
+          lastUpdated: DateTime.now(),
+        );
+      }
+
+      // Update UI immediately with user message
+      appState.setCurrentConversation(conversation);
+      await _conversationService.saveConversation(conversation);
+      
+      _messageController.clear();
+      _scrollToBottom();
+
+      // Get AI response
+      final aiMessage = await _aiService.sendMessage(userMessageText);
+      
+      // Add AI response to conversation
+      final finalMessages = [...conversation.messages, aiMessage];
+      final finalConversation = conversation.copyWith(
+        messages: finalMessages,
+        lastUpdated: DateTime.now(),
+      );
+
+      appState.setCurrentConversation(finalConversation);
+      await _conversationService.saveConversation(finalConversation);
+      
+      // Refresh conversations list
+      await _loadConversations();
+      
+      _scrollToBottom();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error sending message: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _toggleSidebar() {
+    setState(() {
+      _isSidebarVisible = !_isSidebarVisible;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AppState>(
+      builder: (context, appState, child) {
+        return Scaffold(
+          body: Row(
+            children: [
+              // Sidebar
+              if (_isSidebarVisible)
+                Container(
+                  width: 280,
+                  decoration: BoxDecoration(
+                    border: Border(
+                      right: BorderSide(
+                        color: Theme.of(context).dividerColor,
+                      ),
+                    ),
+                  ),
+                  child: Sidebar(
+                    conversations: appState.conversations,
+                    currentConversation: appState.currentConversation,
+                    onConversationSelected: (conversation) {
+                      appState.setCurrentConversation(conversation);
+                    },
+                    onNewConversation: () {
+                      appState.setCurrentConversation(null);
+                    },
+                    onDeleteConversation: (conversationId) async {
+                      await _conversationService.deleteConversation(conversationId);
+                      await _loadConversations();
+                      if (appState.currentConversation?.id == conversationId) {
+                        appState.setCurrentConversation(null);
+                      }
+                    },
+                  ),
+                ),
+              
+              // Main chat area
+              Expanded(
+                child: Column(
+                  children: [
+                    // Header
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                            color: Theme.of(context).dividerColor,
+                          ),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          // Sidebar toggle
+                          IconButton(
+                            icon: Icon(_isSidebarVisible ? Icons.menu_open : Icons.menu),
+                            onPressed: _toggleSidebar,
+                          ),
+                          
+                          // Company logo placeholder
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).primaryColor,
+                              borderRadius: BorderRadius.circular(8),
+                            ),                  child: const Icon(
+                    Icons.gavel,
+                    color: Colors.white,
+                    size: 24,
+                  ),
+                          ),
+                          
+                          const SizedBox(width: 12),
+                          
+                          // Title
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'AI Paralegal Assistant',
+                                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  appState.currentConversation?.title ?? 'New Conversation',
+                                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          
+                          // Search button
+                          IconButton(
+                            icon: const Icon(Icons.search),
+                            onPressed: () {
+                              showSearch(
+                                context: context,
+                                delegate: custom.ConversationSearchDelegate(
+                                  conversations: appState.conversations,
+                                  onConversationSelected: (conversation) {
+                                    appState.setCurrentConversation(conversation);
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                          
+                          // More options
+                          PopupMenuButton<String>(
+                            icon: const Icon(Icons.more_vert),
+                            onSelected: (value) {
+                              switch (value) {
+                                case 'export':
+                                  _showExportDialog();
+                                  break;
+                                case 'settings':
+                                  break;
+                              }
+                            },
+                            itemBuilder: (context) => [
+                              const PopupMenuItem(
+                                value: 'export',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.download),
+                                    SizedBox(width: 8),
+                                    Text('Export Conversation'),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'settings',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.settings),
+                                    SizedBox(width: 8),
+                                    Text('Settings'),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    // Messages
+                    Expanded(
+                      child: appState.currentConversation == null || 
+                              appState.currentConversation!.messages.isEmpty
+                          ? _buildWelcomeScreen()
+                          : _buildMessagesList(appState.currentConversation!.messages),
+                    ),
+                    
+                    // Input area
+                    _buildInputArea(),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildWelcomeScreen() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.gavel,
+            size: 80,
+            color: Theme.of(context).primaryColor.withOpacity(),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Welcome to AI Paralegal Assistant',
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Ask legal questions and get detailed responses with case citations',
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+              color: Theme.of(context).textTheme.bodyLarge?.color?.withOpacity(),
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 32),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildSuggestionChip('Contract law question'),
+              _buildSuggestionChip('Property dispute'),
+              _buildSuggestionChip('Negligence case'),
+              _buildSuggestionChip('Employment issue'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSuggestionChip(String text) {
+    return ActionChip(
+      label: Text(text),
+      onPressed: () {
+        _messageController.text = text;
+        _sendMessage();
+      },
+    );
+  }
+
+  Widget _buildMessagesList(List<Message> messages) {
+    return ListView.builder(
+      controller: _scrollController,
+      padding: const EdgeInsets.all(16),
+      itemCount: messages.length + (_isLoading ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (index >= messages.length) {
+          // Loading indicator
+          return MessageBubble.loading();
+        }
+        
+        final message = messages[index];
+        return MessageBubble(
+          message: message,
+          isUser: message.isUser,
+        );
+      },
+    );
+  }
+
+  Widget _buildInputArea() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border(
+          top: BorderSide(
+            color: Theme.of(context).dividerColor,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _messageController,
+              decoration: InputDecoration(
+                hintText: 'Ask your legal question...',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
+              ),
+              maxLines: null,
+              textInputAction: TextInputAction.send,
+              onSubmitted: (_) => _sendMessage(),
+              enabled: !_isLoading,
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            onPressed: _isLoading ? null : _sendMessage,
+            icon: _isLoading
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.send),
+            style: IconButton.styleFrom(
+              backgroundColor: Theme.of(context).primaryColor,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.all(12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showExportDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Export Conversation'),
+        content: const Text('Export functionality will be implemented here.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+}
+import 'dart:async';
+import 'dart:math';
+import '../models/message.dart';
+
+class AIService {
+  static final AIService _instance = AIService._internal();
+  factory AIService() => _instance;
+  AIService._internal();
+
+  final Random _random = Random();
+
+  // Mock legal scenarios with humorous responses
+  final List<Map<String, dynamic>> _mockResponses = [
+    {
+      'keywords': ['contract', 'agreement', 'breach'],
+      'response': '''Based on the contract law principles you've described, here are the relevant legal precedents:
+
+The fundamental issue appears to center on breach of contract. In contract law, a material breach occurs when one party's failure to perform substantially defeats the purpose of the contract.
+
+**Key Legal Principles:**
+1. **Material vs. Minor Breach**: Courts distinguish between breaches that go to the essence of the contract versus those that are merely incidental.
+2. **Substantial Performance Doctrine**: Even if there are minor deviations, substantial performance may still satisfy contractual obligations.
+3. **Damages**: The non-breaching party may be entitled to compensatory damages to put them in the position they would have been in had the contract been performed.''',
+      'citations': [
+        {
+          'caseTitle': 'Jacob & Youngs v. Kent',
+          'citation': '230 N.Y. 239',
+          'court': 'N.Y. Court of Appeals',
+          'year': '1921',
+          'summary': 'Established the substantial performance doctrine in construction contracts.',
+          'type': 'caselaw'
+        },
+        {
+          'caseTitle': 'Hadley v. Baxendale',
+          'citation': '9 Ex. 341',
+          'court': 'Court of Exchequer',
+          'year': '1854',
+          'summary': 'Landmark case establishing the rule for consequential damages in contract breach.',
+          'type': 'caselaw'
+        }
+      ]
+    },
+    {
+      'keywords': ['property', 'real estate', 'landlord', 'tenant'],
+      'response': '''Your property law question touches on several important landlord-tenant principles. Let me break down the relevant legal framework:
+
+**Landlord-Tenant Law Overview:**
+The relationship between landlords and tenants is governed by both statutory law and common law principles. The key areas of concern typically involve:
+
+1. **Warranty of Habitability**: Landlords have an implied duty to maintain rental properties in habitable condition.
+2. **Quiet Enjoyment**: Tenants have the right to use their rental property without unreasonable interference from the landlord.
+3. **Security Deposits**: Specific statutory requirements govern how security deposits must be handled.
+
+**Remedies Available:**
+- Rent withholding (in jurisdictions that permit it)
+- Repair and deduct
+- Constructive eviction claims
+- Damages for breach of warranty of habitability''',
+      'citations': [
+        {
+          'caseTitle': 'Javins v. First National Realty Corp.',
+          'citation': '428 F.2d 1071',
+          'court': 'D.C. Circuit',
+          'year': '1970',
+          'summary': 'Established implied warranty of habitability in residential leases.',
+          'type': 'caselaw'
+        }
+      ]
+    },
+    {
+      'keywords': ['tort', 'negligence', 'liability'],
+      'response': '''Your negligence question involves classic tort law analysis. Here's the legal framework:
+
+**Elements of Negligence:**
+To establish a negligence claim, the plaintiff must prove four elements:
+1. **Duty**: Defendant owed a legal duty to the plaintiff
+2. **Breach**: Defendant breached that duty through action or inaction
+3. **Causation**: Defendant's breach was both the factual and proximate cause of plaintiff's harm
+4. **Damages**: Plaintiff suffered actual harm or damages
+
+**The Reasonable Person Standard:**
+The standard of care is typically that of a "reasonably prudent person" under similar circumstances. This is an objective standard that doesn't account for the defendant's particular limitations or expertise (unless they hold themselves out as having special skills).
+
+**Comparative vs. Contributory Negligence:**
+- Most jurisdictions now follow comparative negligence rules
+- Pure comparative negligence allows recovery even if plaintiff is 99% at fault
+- Modified comparative negligence bars recovery if plaintiff is 50% or 51% at fault''',
+      'citations': [
+        {
+          'caseTitle': 'Palsgraf v. Long Island Railroad Co.',
+          'citation': '248 N.Y. 339',
+          'court': 'N.Y. Court of Appeals',
+          'year': '1928',
+          'summary': 'Landmark case on proximate cause and the scope of liability in negligence.',
+          'type': 'caselaw'
+        },
+        {
+          'caseTitle': 'Vaughan v. Menlove',
+          'citation': '3 Bing. N.C. 468',
+          'court': 'Common Pleas',
+          'year': '1837',
+          'summary': 'Established the objective reasonable person standard in negligence law.',
+          'type': 'caselaw'
+        }
+      ]
+    }
+  ];
+
+  Future<Message> sendMessage(String userMessage) async {
+    // Simulate network delay
+    await Future.delayed(Duration(milliseconds: 800 + _random.nextInt(1200)));
+
+    // Find matching response based on keywords
+    Map<String, dynamic>? matchedResponse;
+    for (var response in _mockResponses) {
+      final keywords = response['keywords'] as List<String>;
+      if (keywords.any((keyword) => 
+          userMessage.toLowerCase().contains(keyword.toLowerCase()))) {
+        matchedResponse = response;
+        break;
+      }
+    }
+
+    // Default response if no keywords match
+    if (matchedResponse == null) {
+      matchedResponse = {
+        'response': '''Thank you for your legal question. While I don't have specific precedents immediately available for this particular issue, I can provide some general guidance:
+
+**General Legal Research Approach:**
+1. **Identify the Area of Law**: Determine whether this falls under contract, tort, property, criminal, or constitutional law
+2. **Research Statutory Framework**: Check relevant federal and state statutes
+3. **Case Law Research**: Look for similar fact patterns in reported decisions
+4. **Secondary Sources**: Consult legal treatises, law review articles, and practice guides
+
+**Next Steps:**
+I recommend conducting more targeted research using legal databases like Westlaw or Lexis to find cases with similar fact patterns. You may also want to consult relevant practice guides in this area of law.
+
+Would you like me to help you refine your search terms or identify the specific legal issues involved?''',
+        'citations': []
+      };
+    }
+
+    final citations = (matchedResponse['citations'] as List?)
+        ?.map((c) => LegalCitation.fromJson(c))
+        .toList() ?? [];
+
+    return Message(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      content: matchedResponse['response'],
+      isUser: false,
+      timestamp: DateTime.now(),
+      citations: citations.isNotEmpty ? citations : null,
+    );
+  }
+
+  // TODO: Replace with actual API integration
+  /*
+  Future<Message> sendMessageToAPI(String userMessage) async {
+    try {
+      final response = await http.post(
+        Uri.parse('YOUR_API_ENDPOINT'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer YOUR_API_KEY',
+        },
+        body: jsonEncode({
+          'message': userMessage,
+          'conversation_id': 'current_conversation_id',
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        return Message.fromJson(data);
+      } else {
+        throw Exception('Failed to get AI response');
+      }
+    } catch (e) {
+      throw Exception('Network error: $e');
+    }
+  }
+  */
+}
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/conversation.dart';
+import '../models/message.dart';
+
+class ConversationService {
+  static final ConversationService _instance = ConversationService._internal();
+  factory ConversationService() => _instance;
+  ConversationService._internal();
+
+  static const String _conversationsKey = 'conversations';
+  static const String _currentConversationKey = 'current_conversation_id';
+
+  Future<List<Conversation>> getConversations() async {
+    final prefs = await SharedPreferences.getInstance();
+    final conversationsJson = prefs.getStringList(_conversationsKey) ?? [];
+    
+    return conversationsJson
+        .map((jsonStr) => Conversation.fromJson(jsonDecode(jsonStr)))
+        .toList()
+      ..sort((a, b) => b.lastUpdated.compareTo(a.lastUpdated));
+  }
+
+  Future<void> saveConversation(Conversation conversation) async {
+    final prefs = await SharedPreferences.getInstance();
+    final conversations = await getConversations();
+    
+    final existingIndex = conversations.indexWhere((c) => c.id == conversation.id);
+    if (existingIndex != -1) {
+      conversations[existingIndex] = conversation;
+    } else {
+      conversations.insert(0, conversation);
+    }
+
+    final conversationsJson = conversations
+        .map((c) => jsonEncode(c.toJson()))
+        .toList();
+    
+    await prefs.setStringList(_conversationsKey, conversationsJson);
+  }
+
+  Future<void> deleteConversation(String conversationId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final conversations = await getConversations();
+    
+    conversations.removeWhere((c) => c.id == conversationId);
+    
+    final conversationsJson = conversations
+        .map((c) => jsonEncode(c.toJson()))
+        .toList();
+    
+    await prefs.setStringList(_conversationsKey, conversationsJson);
+  }
+
+  Future<Conversation?> getCurrentConversation() async {
+    final prefs = await SharedPreferences.getInstance();
+    final currentId = prefs.getString(_currentConversationKey);
+    
+    if (currentId == null) return null;
+    
+    final conversations = await getConversations();
+    return conversations.firstWhere(
+      (c) => c.id == currentId,
+      orElse: () => throw StateError('Current conversation not found'),
+    );
+  }
+
+  Future<void> setCurrentConversation(String conversationId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_currentConversationKey, conversationId);
+  }
+
+  Future<List<Conversation>> searchConversations(String query) async {
+    final conversations = await getConversations();
+    final lowercaseQuery = query.toLowerCase();
+    
+    return conversations.where((conversation) {
+      // Search in title
+      if (conversation.title.toLowerCase().contains(lowercaseQuery)) {
+        return true;
+      }
+      
+      // Search in message content
+      return conversation.messages.any((message) =>
+          message.content.toLowerCase().contains(lowercaseQuery));
+    }).toList();
+  }
+
+  Future<List<Message>> searchCurrentConversation(String conversationId, String query) async {
+    final conversations = await getConversations();
+    final conversation = conversations.firstWhere(
+      (c) => c.id == conversationId,
+      orElse: () => throw StateError('Conversation not found'),
+    );
+    
+    final lowercaseQuery = query.toLowerCase();
+    return conversation.messages.where((message) =>
+        message.content.toLowerCase().contains(lowercaseQuery)).toList();
+  }
+
+  Future<void> updateConversationTitle(String conversationId, String newTitle) async {
+    final conversations = await getConversations();
+    final index = conversations.indexWhere((c) => c.id == conversationId);
+    
+    if (index != -1) {
+      final updatedConversation = conversations[index].copyWith(
+        title: newTitle,
+        lastUpdated: DateTime.now(),
+      );
+      await saveConversation(updatedConversation);
+    }
+  }
+
+  Future<void> updateConversationCategory(String conversationId, String? category) async {
+    final conversations = await getConversations();
+    final index = conversations.indexWhere((c) => c.id == conversationId);
+    
+    if (index != -1) {
+      final updatedConversation = conversations[index].copyWith(
+        category: category,
+        lastUpdated: DateTime.now(),
+      );
+      await saveConversation(updatedConversation);
+    }
+  }
+
+  Future<void> addTagToConversation(String conversationId, String tag) async {
+    final conversations = await getConversations();
+    final index = conversations.indexWhere((c) => c.id == conversationId);
+    
+    if (index != -1) {
+      final currentTags = List<String>.from(conversations[index].tags);
+      if (!currentTags.contains(tag)) {
+        currentTags.add(tag);
+        final updatedConversation = conversations[index].copyWith(
+          tags: currentTags,
+          lastUpdated: DateTime.now(),
+        );
+        await saveConversation(updatedConversation);
+      }
+    }
+  }
+
+  String generateConversationTitle(String firstMessage) {
+    // Extract key legal terms to create a meaningful title
+    final legalTerms = [
+      'contract', 'tort', 'negligence', 'property', 'criminal', 'constitutional',
+      'employment', 'family', 'corporate', 'intellectual property', 'litigation',
+      'settlement', 'damages', 'liability', 'breach', 'statute', 'regulation'
+    ];
+    
+    final words = firstMessage.toLowerCase().split(' ');
+    final foundTerms = words.where((word) => 
+        legalTerms.any((term) => word.contains(term))).toList();
+    
+    if (foundTerms.isNotEmpty) {
+      final mainTerm = foundTerms.first;
+      return '${mainTerm.substring(0, 1).toUpperCase()}${mainTerm.substring(1)} Question';
+    }
+    
+    // Fallback to first few words
+    final firstWords = words.take(4).join(' ');
+    if (firstWords.length > 30) {
+      return '${firstWords.substring(0, 27)}...';
+    }
+    return firstWords.isEmpty ? 'New Conversation' : firstWords;
+  }
+
+  // TODO: Cloud storage integration
+  /*
+  Future<void> syncToCloud() async {
+    // Implementation for syncing conversations to cloud storage
+    // This would integrate with your backend API
+    try {
+      final conversations = await getConversations();
+      final response = await http.post(
+        Uri.parse('YOUR_SYNC_ENDPOINT'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'conversations': conversations.map((c) => c.toJson()).toList(),
+        }),
+      );
+      
+      if (response.statusCode == 200) {
+        // Handle successful sync
+      }
+    } catch (e) {
+      // Handle sync errors
+    }
+  }
+
+  Future<void> syncFromCloud() async {
+    // Implementation for downloading conversations from cloud
+    try {
+      final response = await http.get(
+        Uri.parse('YOUR_SYNC_ENDPOINT'),
+        headers: {'Authorization': 'Bearer YOUR_TOKEN'},
+      );
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final cloudConversations = (data['conversations'] as List)
+            .map((c) => Conversation.fromJson(c))
+            .toList();
+        
+        // Merge with local conversations
+        for (final conversation in cloudConversations) {
+          await saveConversation(conversation);
+        }
+      }
+    } catch (e) {
+      // Handle sync errors
+    }
+  }
+  */
+}
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import '../models/conversation.dart';
+
+class ExportService {
+  static final ExportService _instance = ExportService._internal();
+  factory ExportService() => _instance;
+  ExportService._internal();
+
+  Future<String> exportConversationToPDF(Conversation conversation) async {
+    // TODO: Implement actual PDF generation
+    // For now, return a placeholder path
+    final directory = await getApplicationDocumentsDirectory();
+    final filePath = '${directory.path}/${conversation.title}_${DateTime.now().millisecondsSinceEpoch}.pdf';
+    
+    /*
+    // Example using pdf package:
+    final pdf = pw.Document();
+    
+    pdf.addPage(
+      pw.Page(
+        build: (pw.Context context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Header(
+                level: 0,
+                child: pw.Text(conversation.title),
+              ),
+              pw.Divider(),
+              ...conversation.messages.map((message) => 
+                pw.Container(
+                  margin: pw.EdgeInsets.only(bottom: 10),
+                  child: pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Text(
+                        message.isUser ? 'User:' : 'AI Assistant:',
+                        style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+                      ),
+                      pw.Text(message.content),
+                      if (message.citations != null && message.citations!.isNotEmpty)
+                        pw.Container(
+                          margin: pw.EdgeInsets.only(top: 5),
+                          child: pw.Column(
+                            crossAxisAlignment: pw.CrossAxisAlignment.start,
+                            children: [
+                              pw.Text('Citations:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                              ...message.citations!.map((citation) => 
+                                pw.Text('??${citation.formattedCitation}')
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    
+    final file = File(filePath);
+    await file.writeAsBytes(await pdf.save());
+    */
+    
+    return filePath;
+  }
+
+  Future<String> exportConversationToWord(Conversation conversation) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final filePath = '${directory.path}/${conversation.title}_${DateTime.now().millisecondsSinceEpoch}.docx';
+    
+    // TODO: Implement actual Word document generation
+    /*
+    // Example structure for Word document:
+    final document = WordDocument();
+    
+    // Add title
+    document.addParagraph(conversation.title, style: 'Heading1');
+    
+    // Add conversation metadata
+    document.addParagraph('Created: ${conversation.createdAt.toString()}');
+    document.addParagraph('Last Updated: ${conversation.lastUpdated.toString()}');
+    if (conversation.category != null) {
+      document.addParagraph('Category: ${conversation.category}');
+    }
+    
+    // Add messages
+    for (final message in conversation.messages) {
+      document.addParagraph(
+        message.isUser ? 'User:' : 'AI Assistant:',
+        style: 'Heading2'
+      );
+      document.addParagraph(message.content);
+      
+      if (message.citations != null && message.citations!.isNotEmpty) {
+        document.addParagraph('Citations:', style: 'Heading3');
+        for (final citation in message.citations!) {
+          document.addParagraph('??${citation.formattedCitation}');
+        }
+      }
+    }
+    
+    await document.saveToFile(filePath);
+    */
+    
+    return filePath;
+  }
+
+  Future<String> exportConversationToCSV(Conversation conversation) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final filePath = '${directory.path}/${conversation.title}_${DateTime.now().millisecondsSinceEpoch}.csv';
+    
+    final buffer = StringBuffer();
+    
+    // CSV Header
+    buffer.writeln('Timestamp,Speaker,Message,Citations');
+    
+    // Add conversation data
+    for (final message in conversation.messages) {
+      final speaker = message.isUser ? 'User' : 'AI Assistant';
+      final content = _escapeCsvField(message.content);
+      final citations = message.citations?.map((c) => c.formattedCitation).join('; ') ?? '';
+      final escapedCitations = _escapeCsvField(citations);
+      
+      buffer.writeln('${message.timestamp.toIso8601String()},$speaker,$content,$escapedCitations');
+    }
+    
+    final file = File(filePath);
+    await file.writeAsString(buffer.toString());
+    
+    return filePath;
+  }
+
+  Future<String> exportConversationToText(Conversation conversation) async {
+    final directory = await getApplicationDocumentsDirectory();
+    final filePath = '${directory.path}/${conversation.title}_${DateTime.now().millisecondsSinceEpoch}.txt';
+    
+    final buffer = StringBuffer();
+    
+    // Header
+    buffer.writeln('AI PARALEGAL CONVERSATION');
+    buffer.writeln('=' * 50);
+    buffer.writeln('Title: ${conversation.title}');
+    buffer.writeln('Created: ${conversation.createdAt}');
+    buffer.writeln('Last Updated: ${conversation.lastUpdated}');
+    if (conversation.category != null) {
+      buffer.writeln('Category: ${conversation.category}');
+    }
+    if (conversation.tags.isNotEmpty) {
+      buffer.writeln('Tags: ${conversation.tags.join(', ')}');
+    }
+    buffer.writeln('=' * 50);
+    buffer.writeln();
+    
+    // Messages
+    for (int i = 0; i < conversation.messages.length; i++) {
+      final message = conversation.messages[i];
+      final speaker = message.isUser ? 'USER' : 'AI ASSISTANT';
+      
+      buffer.writeln('[$speaker] ${message.timestamp}');
+      buffer.writeln(message.content);
+      
+      if (message.citations != null && message.citations!.isNotEmpty) {
+        buffer.writeln();
+        buffer.writeln('CITATIONS:');
+        for (final citation in message.citations!) {
+          buffer.writeln('??${citation.formattedCitation}');
+          if (citation.summary != null) {
+            buffer.writeln('  Summary: ${citation.summary}');
+          }
+        }
+      }
+      
+      if (i < conversation.messages.length - 1) {
+        buffer.writeln();
+        buffer.writeln('-' * 30);
+        buffer.writeln();
+      }
+    }
+    
+    final file = File(filePath);
+    await file.writeAsString(buffer.toString());
+    
+    return filePath;
+  }
+
+  String _escapeCsvField(String field) {
+    if (field.contains(',') || field.contains('"') || field.contains('\n')) {
+      return '"${field.replaceAll('"', '""')}"';
+    }
+    return field;
+  }
+
+  Future<void> shareFile(String filePath) async {
+    // TODO: Implement file sharing
+    /*
+    // Using share_plus package:
+    await Share.shareXFiles([XFile(filePath)]);
+    */
+  }
+
+  Future<List<String>> getAvailableExportFormats() async {
+    return ['PDF', 'Word', 'CSV', 'Text'];
+  }
+}
+import 'package:flutter/foundation.dart';
+import '../models/conversation.dart';
+
+class AppState extends ChangeNotifier {
+  List<Conversation> _conversations = [];
+  Conversation? _currentConversation;
+  String _searchQuery = '';
+  bool _isDarkMode = false;
+
+  List<Conversation> get conversations => _conversations;
+  Conversation? get currentConversation => _currentConversation;
+  String get searchQuery => _searchQuery;
+  bool get isDarkMode => _isDarkMode;
+
+  void setConversations(List<Conversation> conversations) {
+    _conversations = conversations;
+    notifyListeners();
+  }
+
+  void setCurrentConversation(Conversation? conversation) {
+    _currentConversation = conversation;
+    notifyListeners();
+  }
+
+  void addConversation(Conversation conversation) {
+    _conversations.insert(0, conversation);
+    notifyListeners();
+  }
+
+  void updateConversation(Conversation conversation) {
+    final index = _conversations.indexWhere((c) => c.id == conversation.id);
+    if (index != -1) {
+      _conversations[index] = conversation;
+      if (_currentConversation?.id == conversation.id) {
+        _currentConversation = conversation;
+      }
+      notifyListeners();
+    }
+  }
+
+  void removeConversation(String conversationId) {
+    _conversations.removeWhere((c) => c.id == conversationId);
+    if (_currentConversation?.id == conversationId) {
+      _currentConversation = null;
+    }
+    notifyListeners();
+  }
+
+  void setSearchQuery(String query) {
+    _searchQuery = query;
+    notifyListeners();
+  }
+
+  void toggleDarkMode() {
+    _isDarkMode = !_isDarkMode;
+    notifyListeners();
+  }
+
+  List<Conversation> get filteredConversations {
+    if (_searchQuery.isEmpty) {
+      return _conversations;
+    }
+    
+    final query = _searchQuery.toLowerCase();
+    return _conversations.where((conversation) {
+      return conversation.title.toLowerCase().contains(query) ||
+             conversation.messages.any((message) => 
+                 message.content.toLowerCase().contains(query));
+    }).toList();
+  }
+}
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import '../models/message.dart';
+
+class MessageBubble extends StatelessWidget {
+  final Message message;
+  final bool isUser;
+
+  const MessageBubble({
+    super.key,
+    required this.message,
+    required this.isUser,
+  });
+
+  MessageBubble.loading({super.key})
+      : message = _LoadingMessage(),
+        isUser = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (message is _LoadingMessage) {
+      return _buildLoadingBubble(context);
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (!isUser) ...[
+            _buildAvatar(context, isUser: false),
+            const SizedBox(width: 12),
+          ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+              children: [
+                // Message header
+                Row(
+                  mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+                  children: [
+                    Text(
+                      isUser ? 'You' : 'AI Assistant',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      DateFormat('HH:mm').format(message.timestamp),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                
+                // Message bubble
+                Container(
+                  constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * 0.7,
+                  ),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: isUser 
+                        ? Theme.of(context).primaryColor
+                        : Theme.of(context).colorScheme.surface,
+                    borderRadius: BorderRadius.circular(16).copyWith(
+                      topLeft: isUser ? const Radius.circular(16) : const Radius.circular(4),
+                      topRight: isUser ? const Radius.circular(4) : const Radius.circular(16),
+                    ),
+                    border: isUser ? null : Border.all(
+                      color: Theme.of(context).dividerColor,
+                      width: 1,
+                    ),
+                  ),
+                  child: SelectableText(
+                    message.content,
+                    style: TextStyle(
+                      color: isUser 
+                          ? Colors.white 
+                          : Theme.of(context).textTheme.bodyLarge?.color,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+                
+                // Citations
+                if (!isUser && message.citations != null && message.citations!.isNotEmpty)
+                  _buildCitations(context),
+              ],
+            ),
+          ),
+          if (isUser) ...[
+            const SizedBox(width: 12),
+            _buildAvatar(context, isUser: true),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAvatar(BuildContext context, {required bool isUser}) {
+    return Container(
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(
+        color: isUser 
+            ? Theme.of(context).primaryColor 
+            : Theme.of(context).colorScheme.secondary,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Icon(
+        isUser ? Icons.person : Icons.gavel,
+        color: Colors.white,
+        size: 20,
+      ),
+    );
+  }
+
+  Widget _buildCitations(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border.all(
+          color: Theme.of(context).dividerColor,
+          width: 1,
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.library_books,
+                size: 16,
+                color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                'Legal Citations',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...message.citations!.map((citation) => _buildCitation(context, citation)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCitation(BuildContext context, LegalCitation citation) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SelectableText(
+            citation.formattedCitation,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          if (citation.summary != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: SelectableText(
+                citation.summary!,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).textTheme.bodySmall?.color != null 
+                      ? Color.fromRGBO(
+                          Theme.of(context).textTheme.bodySmall!.color!.red,
+                          Theme.of(context).textTheme.bodySmall!.color!.green,
+                          Theme.of(context).textTheme.bodySmall!.color!.blue,
+                          0.7,
+                        )
+                      : null,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
+          _buildCitationTypeBadge(context, citation.type),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCitationTypeBadge(BuildContext context, CitationType type) {
+    Color color;
+    String label;
+    
+    switch (type) {
+      case CitationType.caselaw:
+        color = Colors.blue;
+        label = 'Case Law';
+        break;
+      case CitationType.statute:
+        color = Colors.green;
+        label = 'Statute';
+        break;
+      case CitationType.regulation:
+        color = Colors.orange;
+        label = 'Regulation';
+        break;
+      case CitationType.secondary:
+        color = Colors.purple;
+        label = 'Secondary';
+        break;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withOpacity(),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity()),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoadingBubble(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildAvatar(context, isUser: false),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'AI Assistant',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.8),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surface,
+                    borderRadius: BorderRadius.circular(16).copyWith(
+                      topLeft: const Radius.circular(4),
+                    ),
+                    border: Border.all(
+                      color: Theme.of(context).dividerColor,
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            Theme.of(context).primaryColor,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        'Analyzing your question...',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.7),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LoadingMessage extends Message {
+  _LoadingMessage()
+      : super(
+          id: 'loading',
+          content: '',
+          isUser: false,
+          timestamp: _LoadingDateTime(),
+        );
+}
+
+class _LoadingDateTime extends DateTime {
+  _LoadingDateTime() : super(0);
+}
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import '../models/conversation.dart';
+import '../models/message.dart';
+
+class ConversationSearchDelegate extends SearchDelegate<Conversation?> {
+  final List<Conversation> conversations;
+  final Function(Conversation) onConversationSelected;
+
+  ConversationSearchDelegate({
+    required this.conversations,
+    required this.onConversationSelected,
+  });
+
+  @override
+  String get searchFieldLabel => 'Search conversations and messages...';
+
+  @override
+  List<Widget>? buildActions(BuildContext context) {
+    return [
+      if (query.isNotEmpty)
+        IconButton(
+          icon: const Icon(Icons.clear),
+          onPressed: () {
+            query = '';
+            showSuggestions(context);
+          },
+        ),
+    ];
+  }
+
+  @override
+  Widget? buildLeading(BuildContext context) {
+    return IconButton(
+      icon: const Icon(Icons.arrow_back),
+      onPressed: () => close(context, null),
+    );
+  }
+
+  @override
+  Widget buildResults(BuildContext context) {
+    return _buildSearchResults(context);
+  }
+
+  @override
+  Widget buildSuggestions(BuildContext context) {
+    if (query.isEmpty) {
+      return _buildRecentSearches(context);
+    }
+    return _buildSearchResults(context);
+  }
+
+  Widget _buildSearchResults(BuildContext context) {
+    if (query.isEmpty) {
+      return const Center(
+        child: Text('Enter search terms to find conversations'),
+      );
+    }
+
+    final results = _searchConversations(query);
+
+    if (results.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.search_off,
+              size: 64,
+              color: Theme.of(context).textTheme.bodyLarge?.color?.withOpacity(0.3),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'No results found for \'$query\'',
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                color: Theme.of(context).textTheme.bodyLarge?.color?.withOpacity(0.6),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Try different keywords or check spelling',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      itemCount: results.length,
+      itemBuilder: (context, index) {
+        final result = results[index];
+        return _buildSearchResultItem(context, result);
+      },
+    );
+  }
+
+  Widget _buildSearchResultItem(BuildContext context, SearchResult result) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: Theme.of(context).primaryColor.withOpacity(),
+        child: Icon(
+          Icons.chat_bubble_outline,
+          color: Theme.of(context).primaryColor,
+          size: 20,
+        ),
+      ),
+      title: Text(
+        result.conversation.title,
+        style: const TextStyle(fontWeight: FontWeight.w500),
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (result.matchingMessage != null) ...[
+            Text(
+              _highlightSearchTerm(result.matchingMessage!.content, query),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 4),
+          ],
+          Row(
+            children: [
+              Icon(
+                Icons.access_time,
+                size: 12,
+                color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+              ),
+              const SizedBox(width: 4),
+              Text(
+                _formatDate(result.conversation.lastUpdated),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${result.conversation.messages.length} messages',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      trailing: result.matchCount > 1
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Theme.of(context).primaryColor.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '${result.matchCount} matches',
+                style: TextStyle(
+                  color: Theme.of(context).primaryColor,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            )
+          : null,
+      onTap: () {
+        onConversationSelected(result.conversation);
+        close(context, result.conversation);
+      },
+    );
+  }
+
+  Widget _buildRecentSearches(BuildContext context) {
+    // Show recent conversations or popular categories
+    final recentConversations = conversations.take(5).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'Recent Conversations',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: recentConversations.length,
+            itemBuilder: (context, index) {
+              final conversation = recentConversations[index];
+              return ListTile(
+                leading: CircleAvatar(
+                  backgroundColor: Theme.of(context).primaryColor.withOpacity(0.1),
+                  child: Icon(
+                    Icons.history,
+                    color: Theme.of(context).primaryColor,
+                    size: 20,
+                  ),
+                ),
+                title: Text(conversation.title),
+                subtitle: Text(
+                  _formatDate(conversation.lastUpdated),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                onTap: () {
+                  query = conversation.title;
+                  onConversationSelected(conversation);
+                  close(context, conversation);
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<SearchResult> _searchConversations(String searchQuery) {
+    final results = <SearchResult>[];
+    final lowercaseQuery = searchQuery.toLowerCase();
+
+    for (final conversation in conversations) {
+      int matchCount = 0;
+      String? matchingMessageContent;
+
+      // Check title
+      if (conversation.title.toLowerCase().contains(lowercaseQuery)) {
+        matchCount++;
+      }
+
+      // Check messages
+      for (final message in conversation.messages) {
+        if (message.content.toLowerCase().contains(lowercaseQuery)) {
+          matchCount++;
+          matchingMessageContent ??= message.content;
+        }
+      }
+
+      // Check category
+      if (conversation.category?.toLowerCase().contains(lowercaseQuery) == true) {
+        matchCount++;
+      }
+
+      // Check tags
+      for (final tag in conversation.tags) {
+        if (tag.toLowerCase().contains(lowercaseQuery)) {
+          matchCount++;
+        }
+      }
+
+      if (matchCount > 0) {
+        results.add(SearchResult(
+          conversation: conversation,
+          matchCount: matchCount,
+          matchingMessage: matchingMessageContent != null
+              ? conversation.messages.firstWhere(
+                  (m) => m.content.toLowerCase().contains(lowercaseQuery),
+                )
+              : null,
+        ));
+      }
+    }
+
+    // Sort by relevance (match count) and then by date
+    results.sort((a, b) {
+      final matchComparison = b.matchCount.compareTo(a.matchCount);
+      if (matchComparison != 0) return matchComparison;
+      return b.conversation.lastUpdated.compareTo(a.conversation.lastUpdated);
+    });
+
+    return results;
+  }
+
+  String _highlightSearchTerm(String text, String searchTerm) {
+    // For now, just return the text. In a real implementation,
+    // you might want to use RichText to highlight the search terms
+    return text;
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final difference = now.difference(date);
+
+    if (difference.inDays == 0) {
+      return DateFormat('HH:mm').format(date);
+    } else if (difference.inDays == 1) {
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      return DateFormat('EEEE').format(date);
+    } else {
+      return DateFormat('MMM d').format(date);
+    }
+  }
+}
+
+class SearchResult {
+  final Conversation conversation;
+  final int matchCount;
+  final Message? matchingMessage;
+
+  SearchResult({
+    required this.conversation,
+    required this.matchCount,
+    this.matchingMessage,
+  });
+}
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import '../models/conversation.dart';
+
+class Sidebar extends StatefulWidget {
+  f            Text(
+              'Tags',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(),
+              ),
+            ),st<Conversation> conversations;
+  final Conversation? currentConversation;
+  final Function(Conversation) onConversationSelected;
+  final VoidCallback onNewConversation;
+  final Function(String) onDeleteConversation;
+
+  const Sidebar({
+    super.key,
+    required this.conversations,
+    required this.currentConversation,
+    required this.onConversationSelected,
+    required this.onNewConversation,
+    required this.onDeleteConversation,
+  });
+
+  @override
+  State<Sidebar> createState() => _SidebarState();
+}
+
+class _SidebarState extends State<Sidebar> {
+  String _searchQuery = '';
+  String _selectedCategory = 'All';
+  final Set<String> _selectedTags = {};
+
+  List<Conversation> get filteredConversations {
+    var filtered = widget.conversations;
+
+    // Filter by search query
+    if (_searchQuery.isNotEmpty) {
+      final query = _searchQuery.toLowerCase();
+      filtered = filtered.where((conversation) {
+        return conversation.title.toLowerCase().contains(query) ||
+               conversation.messages.any((message) => 
+                   message.content.toLowerCase().contains(query));
+      }).toList();
+    }
+
+    // Filter by category
+    if (_selectedCategory != 'All') {
+      filtered = filtered.where((conversation) => 
+          conversation.category == _selectedCategory).toList();
+    }
+
+    // Filter by tags
+    if (_selectedTags.isNotEmpty) {
+      filtered = filtered.where((conversation) =>
+          _selectedTags.any((tag) => conversation.tags.contains(tag))).toList();
+    }
+
+    return filtered;
+  }
+
+  Set<String> get availableCategories {
+    final categories = {'All'};
+    for (final conversation in widget.conversations) {
+      if (conversation.category != null) {
+        categories.add(conversation.category!);
+      }
+    }
+    return categories;
+  }
+
+  Set<String> get availableTags {
+    final tags = <String>{};
+    for (final conversation in widget.conversations) {
+      tags.addAll(conversation.tags);
+    }
+    return tags;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Theme.of(context).colorScheme.surface,
+      child: Column(
+        children: [
+          // Header
+          _buildHeader(),
+          
+          // Search
+          _buildSearch(),
+          
+          // Filters
+          if (availableCategories.length > 1 || availableTags.isNotEmpty)
+            _buildFilters(),
+          
+          // Conversations list
+          Expanded(
+            child: _buildConversationsList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).dividerColor,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Conversations',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: widget.onNewConversation,
+            tooltip: 'New Conversation',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearch() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      child: TextField(
+        decoration: InputDecoration(
+          hintText: 'Search conversations...',
+          prefixIcon: const Icon(Icons.search),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        ),
+        onChanged: (value) {
+          setState(() {
+            _searchQuery = value;
+          });
+        },
+      ),
+    );
+  }
+
+  Widget _buildFilters() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Category filter
+          if (availableCategories.length > 1) ...[
+            Text(
+              'Category',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: availableCategories.map((category) {
+                final isSelected = _selectedCategory == category;
+                return FilterChip(
+                  label: Text(category),
+                  selected: isSelected,
+                  onSelected: (selected) {
+                    setState(() {
+                      _selectedCategory = category;
+                    });
+                  },
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 16),
+          ],
+          
+          // Tags filter
+          if (availableTags.isNotEmpty) ...[
+            Text(
+              'Tags',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).textTheme.bodySmall?.color != null 
+                    ? Color.fromRGBO(
+                        Theme.of(context).textTheme.bodySmall!.color!.red,
+                        Theme.of(context).textTheme.bodySmall!.color!.green,
+                        Theme.of(context).textTheme.bodySmall!.color!.blue,
+                        0.7,
+                      )
+                    : null,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: availableTags.map((tag) {
+                final isSelected = _selectedTags.contains(tag);
+                return FilterChip(
+                  label: Text(tag),
+                  selected: isSelected,
+                  onSelected: (selected) {
+                    setState(() {
+                      if (selected) {
+                        _selectedTags.add(tag);
+                      } else {
+                        _selectedTags.remove(tag);
+                      }
+                    });
+                  },
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 16),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConversationsList() {
+    final conversations = filteredConversations;
+    
+    if (conversations.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.chat_bubble_outline,
+              size: 48,
+              color: Theme.of(context).textTheme.bodyLarge?.color?.withOpacity(0.3),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _searchQuery.isNotEmpty 
+                  ? 'No conversations found'
+                  : 'No conversations yet',
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                color: Theme.of(context).textTheme.bodyLarge?.color?.withOpacity(0.6),
+              ),
+            ),
+            if (_searchQuery.isEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Start a new conversation',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      itemCount: conversations.length,
+      itemBuilder: (context, index) {
+        final conversation = conversations[index];
+        final isSelected = widget.currentConversation?.id == conversation.id;
+        
+        return Container(
+          margin: const EdgeInsets.only(bottom: 4),
+          child: Material(
+            color: isSelected 
+                ? Theme.of(context).primaryColor.withOpacity(0.1)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => widget.onConversationSelected(conversation),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Title and menu
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            conversation.title,
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                              color: isSelected 
+                                  ? Theme.of(context).primaryColor
+                                  : null,
+                            ),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        PopupMenuButton<String>(
+                          icon: Icon(
+                            Icons.more_vert,
+                            size: 16,
+                            color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+                          ),
+                          onSelected: (value) {
+                            switch (value) {
+                              case 'rename':
+                                _showRenameDialog(conversation);
+                                break;
+                              case 'delete':
+                                _showDeleteDialog(conversation);
+                                break;
+                              case 'export':
+                                // TODO: Implement export
+                                break;
+                            }
+                          },
+                          itemBuilder: (context) => [
+                            const PopupMenuItem(
+                              value: 'rename',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.edit, size: 16),
+                                  SizedBox(width: 8),
+                                  Text('Rename'),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'export',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.download, size: 16),
+                                  SizedBox(width: 8),
+                                  Text('Export'),
+                                ],
+                              ),
+                            ),
+                            const PopupMenuItem(
+                              value: 'delete',
+                              child: Row(
+                                children: [
+                                  Icon(Icons.delete, size: 16),
+                                  const SizedBox(width: 8),
+                                  Text('Delete'),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    
+                    // Last message preview
+                    if (conversation.messages.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        conversation.messages.last.content,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(),
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                    
+                    // Metadata
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.access_time,
+                          size: 12,
+                          color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _formatDate(conversation.lastUpdated),
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          '${conversation.messages.length} messages',
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).textTheme.bodySmall?.color?.withOpacity(0.5),
+                          ),
+                        ),
+                      ],
+                    ),
+                    
+                    // Tags
+                    if (conversation.tags.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 4,
+                        runSpacing: 4,
+                        children: conversation.tags.map((tag) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).primaryColor.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: Theme.of(context).primaryColor.withOpacity(0.3),
+                            ),
+                          ),
+                          child: Text(
+                            tag,
+                            style: TextStyle(
+                              color: Theme.of(context).primaryColor,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        )).toList(),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    final now = DateTime.now();
+    final difference = now.difference(date);
+    
+    if (difference.inDays == 0) {
+      return DateFormat('HH:mm').format(date);
+    } else if (difference.inDays == 1) {
+      return 'Yesterday';
+    } else if (difference.inDays < 7) {
+      return DateFormat('EEEE').format(date);
+    } else {
+      return DateFormat('MMM d').format(date);
+    }
+  }
+
+  void _showRenameDialog(Conversation conversation) {
+    final controller = TextEditingController(text: conversation.title);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename Conversation'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            labelText: 'Title',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              // TODO: Implement rename functionality
+              Navigator.of(context).pop();
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeleteDialog(Conversation conversation) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Conversation'),
+        content: Text('Are you sure you want to delete \'${conversation.title}\'?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              widget.onDeleteConversation(conversation.id);
+              Navigator.of(context).pop();
+            },
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+}
