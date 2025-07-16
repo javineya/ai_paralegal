@@ -1,4 +1,4 @@
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -18,46 +18,35 @@ class AIParalegalApp extends StatelessWidget {
       create: (context) => AppState(),
       child: Consumer<AppState>(
         builder: (context, appState, child) {
-          // Use platform-specific themes
-          if (Platform.isIOS) {
-            return CupertinoApp(
-              title: 'AI Paralegal',
-              theme: CupertinoThemeData(
-                primaryColor: CupertinoColors.systemBlue,
-                brightness: appState.isDarkMode ? Brightness.dark : Brightness.light,
+          // Use Material Design for web and other platforms
+          // For web deployment, we'll use Material Design consistently
+          return MaterialApp(
+            title: 'AI Paralegal',
+            theme: ThemeData(
+              colorScheme: ColorScheme.fromSeed(
+                seedColor: const Color(0xFF1976D2),
               ),
-              home: const ChatScreen(),
-              debugShowCheckedModeBanner: false,
-            );
-          } else {
-            return MaterialApp(
-              title: 'AI Paralegal',
-              theme: ThemeData(
-                colorScheme: ColorScheme.fromSeed(
-                  seedColor: const Color(0xFF1976D2),
-                ),
-                useMaterial3: true,
-                appBarTheme: const AppBarTheme(
-                  centerTitle: false,
-                  elevation: 0,
-                ),
+              useMaterial3: true,
+              appBarTheme: const AppBarTheme(
+                centerTitle: false,
+                elevation: 0,
               ),
-              darkTheme: ThemeData(
-                colorScheme: ColorScheme.fromSeed(
-                  seedColor: const Color(0xFF1976D2),
-                  brightness: Brightness.dark,
-                ),
-                useMaterial3: true,
-                appBarTheme: const AppBarTheme(
-                  centerTitle: false,
-                  elevation: 0,
-                ),
+            ),
+            darkTheme: ThemeData(
+              colorScheme: ColorScheme.fromSeed(
+                seedColor: const Color(0xFF1976D2),
+                brightness: Brightness.dark,
               ),
-              themeMode: appState.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-              home: const ChatScreen(),
-              debugShowCheckedModeBanner: false,
-            );
-          }
+              useMaterial3: true,
+              appBarTheme: const AppBarTheme(
+                centerTitle: false,
+                elevation: 0,
+              ),
+            ),
+            themeMode: appState.isDarkMode ? ThemeMode.dark : ThemeMode.light,
+            home: const ChatScreen(),
+            debugShowCheckedModeBanner: false,
+          );
         },
       ),
     );
