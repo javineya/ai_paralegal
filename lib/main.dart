@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
 void main() {
   runApp(const AIParalegalApp());
@@ -38,6 +40,43 @@ class _SimpleChatScreenState extends State<SimpleChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final List<ChatMessage> _messages = [];
 
+  @override
+  void initState() {
+    super.initState();
+    _loadChatHistory();
+  }
+
+  Future<void> _loadChatHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final historyJson = prefs.getString('chat_history');
+      if (historyJson != null) {
+        final List<dynamic> historyList = json.decode(historyJson);
+        setState(() {
+          _messages.clear();
+          _messages.addAll(
+            historyList.map((item) => ChatMessage.fromJson(item)).toList(),
+          );
+        });
+      }
+    } catch (e) {
+      // If loading fails, just start with empty history
+      print('Failed to load chat history: $e');
+    }
+  }
+
+  Future<void> _saveChatHistory() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final historyJson = json.encode(
+        _messages.map((message) => message.toJson()).toList(),
+      );
+      await prefs.setString('chat_history', historyJson);
+    } catch (e) {
+      print('Failed to save chat history: $e');
+    }
+  }
+
   void _sendMessage() {
     if (_messageController.text.trim().isEmpty) return;
     
@@ -55,6 +94,14 @@ class _SimpleChatScreenState extends State<SimpleChatScreen> {
     });
     
     _messageController.clear();
+    _saveChatHistory(); // Save after adding messages
+  }
+
+  Future<void> _clearHistory() async {
+    setState(() {
+      _messages.clear();
+    });
+    await _saveChatHistory();
   }
 
   @override
@@ -65,6 +112,14 @@ class _SimpleChatScreenState extends State<SimpleChatScreen> {
         backgroundColor: const Color(0xFF1976D2),
         foregroundColor: Colors.white,
         elevation: 0,
+        actions: [
+          if (_messages.isNotEmpty)
+            IconButton(
+              onPressed: _clearHistory,
+              icon: const Icon(Icons.delete_outline),
+              tooltip: 'Clear History',
+            ),
+        ],
       ),
       body: Column(
         children: [
@@ -184,4 +239,20 @@ class ChatMessage {
     required this.text,
     required this.isUser,
   });
+
+  // Convert to JSON for storage
+  Map<String, dynamic> toJson() {
+    return {
+      'text': text,
+      'isUser': isUser,
+    };
+  }
+
+  // Create from JSON
+  factory ChatMessage.fromJson(Map<String, dynamic> json) {
+    return ChatMessage(
+      text: json['text'] ?? '',
+      isUser: json['isUser'] ?? false,
+    );
+  }
 }
