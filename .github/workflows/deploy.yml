@@ -38,11 +38,6 @@ jobs:
     - name: Build web
       run: flutter build web --release --base-href "/ai_paralegal/" --web-renderer canvaskit
       
-    - name: Setup Pages
-      uses: actions/configure-pages@v4
-      with:
-        enablement: true
-      
     - name: Upload artifact
       uses: actions/upload-pages-artifact@v3
       with:
