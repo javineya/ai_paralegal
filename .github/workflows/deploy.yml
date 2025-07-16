@@ -39,7 +39,7 @@ jobs:
         flutter pub deps
       
     - name: Build web
-      run: flutter build web --release --web-renderer canvaskit
+      run: flutter build web --release --web-renderer html
       
     - name: Upload artifact
       uses: actions/upload-pages-artifact@v3
